@@ -8,12 +8,12 @@ import copy
 import logging
 
 from pathlib import Path
-from pytorch_influence_functions.influence_function import s_test, grad_z
+from pytorch_influence_functions.influence_function import calc_loss, s_test, grad_z
 from pytorch_influence_functions.utils import save_json, display_progress
 
 
 def calc_s_test(model, test_loader, train_loader, save=False, gpu=-1,
-                damp=0.01, scale=25, recursion_depth=5000, r=1, start=0):
+                damp=0.01, scale=25, recursion_depth=5000, r=1, start=0, loss_fn=calc_loss):
     """Calculates s_test for the whole test dataset taking into account all
     training data images.
 
@@ -51,7 +51,7 @@ def calc_s_test(model, test_loader, train_loader, save=False, gpu=-1,
         t_test = test_loader.collate_fn([t_test])
 
         s_test_vec = calc_s_test_single(model, z_test, t_test, train_loader,
-                                        gpu, damp, scale, recursion_depth, r)
+                                        gpu, damp, scale, recursion_depth, r, loss_fn=loss_fn)
 
         if save:
             s_test_vec = [s.cpu() for s in s_test_vec]
@@ -67,7 +67,7 @@ def calc_s_test(model, test_loader, train_loader, save=False, gpu=-1,
 
 
 def calc_s_test_single(model, z_test, t_test, train_loader, gpu=-1,
-                       damp=0.01, scale=25, recursion_depth=5000, r=1):
+                       damp=0.01, scale=25, recursion_depth=5000, r=1, loss_fn=calc_loss):
     """Calculates s_test for a single test image taking into account the whole
     training dataset. s_test = invHessian * nabla(Loss(test_img, model params))
 
@@ -85,6 +85,7 @@ def calc_s_test_single(model, z_test, t_test, train_loader, gpu=-1,
         r: int, number of iterations of which to take the avg.
             of the h_estimate calculation; r*recursion_depth should equal the
             training dataset size.
+        loss_fn: torch loss, loss function of the model.
 
     Returns:
         s_test_vec: torch tensor, contains s_test for a single test image"""
@@ -92,7 +93,7 @@ def calc_s_test_single(model, z_test, t_test, train_loader, gpu=-1,
     for i in range(r):
         s_test_vec_list.append(s_test(z_test, t_test, model, train_loader,
                                       gpu=gpu, damp=damp, scale=scale,
-                                      recursion_depth=recursion_depth))
+                                      recursion_depth=recursion_depth, loss_fn=loss_fn))
         display_progress("Averaging r-times: ", i, r)
 
     ################################
@@ -108,7 +109,7 @@ def calc_s_test_single(model, z_test, t_test, train_loader, gpu=-1,
     return s_test_vec
 
 
-def calc_grad_z(model, train_loader, save_pth=False, gpu=-1, start=0):
+def calc_grad_z(model, train_loader, save_pth=False, gpu=-1, start=0, loss_fn=calc_loss):
     """Calculates grad_z and can save the output to files. One grad_z should
     be computed for each training data sample.
 
@@ -119,6 +120,7 @@ def calc_grad_z(model, train_loader, save_pth=False, gpu=-1, start=0):
             Omitting this argument will skip saving
         gpu: int, device id to use for GPU, -1 for CPU (default)
         start: int, index of the first test index to use. default is 0
+        loss_fn: torch loss, loss function of the model.
 
     Returns:
         grad_zs: list of torch tensors, contains the grad_z tensors
@@ -134,7 +136,7 @@ def calc_grad_z(model, train_loader, save_pth=False, gpu=-1, start=0):
         z, t = train_loader.dataset[i]
         z = train_loader.collate_fn([z])
         t = train_loader.collate_fn([t])
-        grad_z_vec = grad_z(z, t, model, gpu=gpu)
+        grad_z_vec = grad_z(z, t, model, gpu=gpu, loss_fn=loss_fn)
         if save_pth:
             grad_z_vec = [g.cpu() for g in grad_z_vec]
             torch.save(grad_z_vec, save_pth.joinpath(f"{i}.grad_z"))
@@ -280,7 +282,7 @@ def calc_influence_function(train_dataset_size, grad_z_vecs=None,
 
 def calc_influence_single(model, train_loader, test_loader, test_id_num, gpu,
                           recursion_depth, r, s_test_vec=None,
-                          time_logging=False):
+                          time_logging=False, loss_fn=calc_loss):
     """Calculates the influences of all training data points on a single
     test dataset image.
 
@@ -299,6 +301,7 @@ def calc_influence_single(model, train_loader, test_loader, test_id_num, gpu,
             training dataset size.
         s_test_vec: list of torch tensor, contains s_test vectors. If left
             empty it will also be calculated
+        loss_fn: torch loss, loss function of the model.
 
     Returns:
         influence: list of float, influences of all training data samples
@@ -314,7 +317,7 @@ def calc_influence_single(model, train_loader, test_loader, test_id_num, gpu,
         t_test = test_loader.collate_fn([t_test])
         s_test_vec = calc_s_test_single(model, z_test, t_test, train_loader,
                                         gpu, recursion_depth=recursion_depth,
-                                        r=r)
+                                        r=r, loss_fn=loss_fn)
 
     # Calculate the influence function
     train_dataset_size = len(train_loader.dataset)
@@ -325,7 +328,7 @@ def calc_influence_single(model, train_loader, test_loader, test_id_num, gpu,
         t = train_loader.collate_fn([t])
         if time_logging:
             time_a = datetime.datetime.now()
-        grad_z_vec = grad_z(z, t, model, gpu=gpu)
+        grad_z_vec = grad_z(z, t, model, gpu=gpu, loss_fn=loss_fn)
         if time_logging:
             time_b = datetime.datetime.now()
             time_delta = time_b - time_a
@@ -419,6 +422,7 @@ def calc_img_wise(config, model, train_loader, test_loader):
     test_sample_num = config['test_sample_num']
     test_start_index = config['test_start_index']
     outdir = Path(config['outdir'])
+    loss_fn = config['loss_fn']
 
     # If calculating the influence for a subset of the whole dataset,
     # calculate it evenly for the same number of samples from all classes.
@@ -459,7 +463,7 @@ def calc_img_wise(config, model, train_loader, test_loader):
         start_time = time.time()
         influence, harmful, helpful, _ = calc_influence_single(
             model, train_loader, test_loader, test_id_num=i, gpu=0,
-            recursion_depth=config['recursion_depth'], r=config['r_averaging'])
+            recursion_depth=config['recursion_depth'], r=config['r_averaging'], loss_fn=loss_fn)
         end_time = time.time()
 
         ###########
@@ -507,14 +511,16 @@ def calc_all_grad_then_test(config, model, train_loader, test_loader):
     if not grad_z_outdir.exists():
         grad_z_outdir.mkdir()
 
+    loss_fn = config['loss_fn']
+
     influence_results = {}
 
     calc_s_test(model, test_loader, train_loader, s_test_outdir,
                 config['gpu'], config['damp'], config['scale'],
                 config['recursion_depth'], config['r_averaging'],
-                config['test_start_index'])
+                config['test_start_index'], loss_fn=loss_fn)
     calc_grad_z(model, train_loader, grad_z_outdir, config['gpu'],
-                config['test_start_index'])
+                config['test_start_index'], loss_fn=loss_fn)
 
     train_dataset_len = len(train_loader.dataset)
     influences, harmful, helpful = calc_influence_function(train_dataset_len)
