@@ -13,10 +13,10 @@ from pytorch_influence_functions.test_influence_functions.utils.dummy_dataset im
 )
 
 
-class LogisticRegression(LightningModule):
-    def __init__(self, n_classes=2, n_features=20, idx_to_remove=None):
+class LinearRegression(LightningModule):
+    def __init__(self, n_features=20, idx_to_remove=None):
         super().__init__()
-        self.training_set = DummyDataset(n_classes=n_classes, n_features=n_features)
+        self.training_set = DummyDataset(n_features=n_features)
 
         if idx_to_remove is not None:
             self.idx_to_remove = idx_to_remove
@@ -26,31 +26,22 @@ class LogisticRegression(LightningModule):
             self.training_set = Subset(self.training_set, indices_to_keep)
 
         self.test_set = DummyDataset(
-            n_classes=n_classes, n_features=n_features, train=False
+            n_features=n_features, train=False
         )
 
-        self.n_classes = n_classes
-
-        out = 1 if n_classes == 2 else n_classes
-        self.linear = nn.Linear(n_features, out)
+        self.linear = nn.Linear(n_features, 1)
 
     def forward(self, x: torch.Tensor):
-        x = self.linear(x)
-        if self.n_classes == 2:
-            return x.view(-1)
 
-        return x
+        out = self.linear(x)
 
-    def loss(self, logits, labels):
-        if self.n_classes == 2:
-            f = F.binary_cross_entropy_with_logits
-        else:
-            f = F.cross_entropy
+        return out.view(-1)
 
-        return f(logits, labels)
+    def loss(self, pred, target):
+        return F.mse_loss(pred, target)
 
     def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=1e-4, weight_decay=1e-4)
+        return torch.optim.Adam(self.parameters(), lr=1e-4)
 
     def training_step(self, batch, batch_idx):
         x, y = batch
@@ -69,12 +60,8 @@ class LogisticRegression(LightningModule):
         x, y = val_batch
         logits = self(x)
         loss = self.loss(logits, y)
-        softmax = F.softmax(logits, dim=0)
-        _, predicted = torch.max(softmax.data, 1)
-        correct = (predicted == y).sum().double()
-        accuracy = correct / x.size(0)
 
-        return {"val_loss": loss, "val_acc": accuracy}
+        return {"val_loss": loss}
 
     def val_dataloader(self) -> Union[DataLoader, List[DataLoader]]:
         return DataLoader(self.test_set, batch_size=32, num_workers=4)

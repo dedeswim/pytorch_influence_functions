@@ -2,7 +2,7 @@ from unittest import TestCase
 import torch
 import pytorch_lightning as pl
 from torch.autograd.functional import hessian
-from sklearn.linear_model import LogisticRegression as SklearnLogReg
+from sklearn.linear_model import LinearRegression as SklearnLR
 import unittest
 import numpy as np
 
@@ -23,8 +23,8 @@ from pytorch_influence_functions.test_influence_functions.utils.dummy_dataset im
     DummyDataset,
 )
 
-from pytorch_influence_functions.test_influence_functions.utils.logistic_regression import (
-    LogisticRegression,
+from pytorch_influence_functions.test_influence_functions.utils.linear_regression import (
+    LinearRegression,
 )
 
 
@@ -34,45 +34,44 @@ class TestIHVPGrad(TestCase):
         pl.seed_everything(0)
 
         cls.n_features = 10
-        cls.n_classes = 3
 
-        cls.n_params = cls.n_classes * cls.n_features + cls.n_features
+        cls.n_params = 2 * cls.n_features
 
-        cls.model = LogisticRegression(cls.n_classes, cls.n_features)
+        cls.model = LinearRegression(cls.n_features)
 
         gpus = 1 if torch.cuda.is_available() else 0
         trainer = pl.Trainer(gpus=gpus, max_epochs=10)
-        # trainer.fit(self.model)
+        # trainer.fit(cls.model)
 
+        print(tuple(cls.model.parameters()))
         use_sklearn = True
         if use_sklearn:
-            train_dataset = DummyDataset(cls.n_features, cls.n_classes)
-            multi_class = "multinomial" if cls.model.n_classes != 2 else "auto"
-            clf = SklearnLogReg(C=1e4, tol=1e-8, max_iter=1000, multi_class=multi_class)
-
+            train_dataset = DummyDataset(cls.n_features)
+            clf = SklearnLR()
             clf.fit(train_dataset.data, train_dataset.targets)
 
             with torch.no_grad():
                 cls.model.linear.weight = torch.nn.Parameter(
-                    torch.tensor(clf.coef_, dtype=torch.float)
+                    torch.tensor([clf.coef_], dtype=torch.float)
                 )
                 cls.model.linear.bias = torch.nn.Parameter(
-                    torch.tensor(clf.intercept_, dtype=torch.float)
+                    torch.tensor([clf.intercept_], dtype=torch.float)
                 )
+
+        cls.train_loader = cls.model.train_dataloader(batch_size=40000)
 
         # Setup test point data
         cls.test_idx = 8
         cls.x_test = torch.tensor(
-            cls.model.test_set.data[[cls.test_idx]], dtype=torch.float
+            [cls.model.test_set.data[[cls.test_idx]]], dtype=torch.float
         )
         cls.y_test = torch.tensor(
-            cls.model.test_set.targets[[cls.test_idx]], dtype=torch.long
+            [cls.model.test_set.targets[[cls.test_idx]]], dtype=torch.float
         )
 
         # Compute estimated IVHP
         cls.gpu = 1 if torch.cuda.is_available() else -1
 
-        cls.train_loader = cls.model.train_dataloader(batch_size=40000)
         # Compute anc flatten grad
         grads = grad_z(cls.x_test, cls.y_test, cls.model, gpu=cls.gpu)
         flat_grads = parameters_to_vector(grads)
@@ -109,6 +108,14 @@ class TestIHVPGrad(TestCase):
 
         print("Hessian:")
         print(h)
+
+        complete_x_train = cls.train_loader.dataset.data
+
+        real_hessian = complete_x_train.T @ complete_x_train / complete_x_train.shape[0] * 2
+
+        print(real_hessian)
+
+        print(np.linalg.norm(real_hessian - h.cpu().numpy()[:10, :10]))
 
         np.save("hessian_pytorch.npy", h.cpu().numpy())
 
@@ -147,7 +154,7 @@ class TestIHVPGrad(TestCase):
             gpu=self.gpu,
             damp=0.0,
             r=10,
-            recursion_depth=10_000,
+            recursion_depth=5_000,
         )
 
         flat_estimated_ihvp = parameters_to_vector(estimated_ihvp)

@@ -140,9 +140,10 @@ def calc_loss(logits, labels):
 
     Returns:
         loss: scalar, the loss"""
-    pred = F.softmax(logits)
 
-    return F.cross_entropy(logits, labels)
+    loss = F.mse_loss(logits, labels)
+
+    return loss
 
 
 def grad_z(x, y, model, gpu=-1):
